@@ -1,6 +1,7 @@
 import DataLoader from 'dataloader'
-
-import { getCollection } from './helpers'
+import stringify from "json-stable-stringify";
+import { first } from 'lodash';
+import { getCollection, idsToStrings } from './helpers'
 
 // https://github.com/graphql/dataloader#batch-function
 const orderDocs = ids => docs => {
@@ -11,13 +12,42 @@ const orderDocs = ids => docs => {
   return ids.map(id => idMap[id])
 }
 
-export const createCachingMethods = ({ collection, cache }) => {
-  const loader = new DataLoader(ids =>
-    collection
-      .find({ _id: { $in: ids } })
-      .toArray()
-      .then(orderDocs(ids))
+export const createCachingMethods = async ({ collection, cache }) => {
+  const loader = new DataLoader(async ids => {
+
+    try {
+      const items = await collection
+        .find({ _id: { $in: ids } })
+        .toArray();
+
+      return idsToStrings(orderDocs(ids)))
+
+    } catch(e) {
+      throw e;
+    }
   )
+
+
+  const dataQuery = async ({ queries }) => {
+    const { projection, select, lean, sort } = first(queries)
+
+    try {
+      let items = await collection.find({ $or: queries.map(({query}) => query) }, projection)
+      .select(select)
+      .sort(sortBy)
+      .lean()
+      .toArray();
+
+    } catch(e) {
+      throw e;
+    }
+
+    items = idsToStrings(items);
+
+    return queries.map({query}) => items.filter(sift(query)));
+  }
+
+  const queryLoader = new DataLoader(queries => dataQuery({ queries }));
 
   const cachePrefix = `mongo-${getCollection(collection).collectionName}-`
 
@@ -25,12 +55,17 @@ export const createCachingMethods = ({ collection, cache }) => {
     findOneById: async (id, { ttl } = {}) => {
       const key = cachePrefix + id
 
-      const cacheDoc = await cache.get(key)
-      if (cacheDoc) {
-        return cacheDoc
+      try {
+        const cacheDoc = await cache.get(key)
+        if (cacheDoc) {
+          return cacheDoc
+        }
+
+        const doc = await loader.load(id)
+      } catch(e) {
+        throw e;
       }
 
-      const doc = await loader.load(id)
       if (Number.isInteger(ttl)) {
         // https://github.com/apollographql/apollo-server/tree/master/packages/apollo-server-caching#apollo-server-caching
         cache.set(key, doc, { ttl })
@@ -41,8 +76,45 @@ export const createCachingMethods = ({ collection, cache }) => {
     findManyByIds: (ids, { ttl } = {}) => {
       return Promise.all(ids.map(id => methods.findOneById(id, { ttl })))
     },
-    deleteFromCacheById: id => cache.delete(cachePrefix + id)
+
+    deleteFromCacheById: id => cache.delete(cachePrefix + id),
+    // deleteFromCacheByQuery: query => cache.delete(cachePrefix + id),
+
+    findByQuery = async ({query, ttl }) => {
+      try {
+        const docs = await queryLoader.load(query);
+        docs.forEach(doc => loader.prime(doc._id.toString(), doc));
+        return docs
+      } catch(e) {
+        throw e;
+      }
+    }
+
+    findOneByQuery = async (query) => {
+      try {
+        const docs = await methods.findByQuery(query);
+        return first(docs);
+      } catch(e) {
+        throw e;
+      }
+    }
+
   }
 
   return methods
 }
+
+
+// function usersByQueryBatchLoadFn(queries) {
+//   // The '$or' operator lets you combine multiple queries so that any record matching any of the queries gets returned
+//   const users = await MongooseUserModel.find({ '$or': queries }).exec();
+//
+//   // You can prime other loaders as well
+//   // Priming inserts the key into the cache of another loader
+//   for (const user of users) {
+//     userByIdLoader.prime(user.id.toString(), user);
+//   }
+//
+//   // Sift.js applies the MongoDB query to the data to determine if it matches the query. We use this to assign the right users to the right query that requested it.
+//   return queries.map(query => users.filter(sift(query)));
+// };

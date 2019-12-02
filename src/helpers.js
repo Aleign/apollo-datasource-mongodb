@@ -6,3 +6,5 @@ export const isCollectionOrModel = x =>
   Boolean(x && (typeof x === TYPEOF_COLLECTION || isModel(x)))
 
 export const getCollection = x => (isModel(x) ? x.collection : x)
+
+export const idsToStrings = x => x.map(i => ({...i, id: i._id.toString()}));
