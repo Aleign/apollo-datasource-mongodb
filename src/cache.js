@@ -1,9 +1,10 @@
 import DataLoader from 'dataloader'
-import stringify from "json-stable-stringify";
 import { first } from 'lodash';
+import sift from 'sift'
 import { getCollection, idsToStrings } from './helpers'
-
 // https://github.com/graphql/dataloader#batch-function
+
+
 const orderDocs = ids => docs => {
   const idMap = {}
   docs.forEach(doc => {
@@ -12,20 +13,20 @@ const orderDocs = ids => docs => {
   return ids.map(id => idMap[id])
 }
 
-export const createCachingMethods = async ({ collection, cache }) => {
+export const createCachingMethods = ({ collection, cache }) => {
   const loader = new DataLoader(async ids => {
 
     try {
       const items = await collection
         .find({ _id: { $in: ids } })
-        .toArray();
+        .toArray()
 
-      return idsToStrings(orderDocs(ids)))
+      return idsToStrings(orderDocs(ids)(items));
 
     } catch(e) {
       throw e;
     }
-  )
+  })
 
 
   const dataQuery = async ({ queries }) => {
@@ -33,21 +34,24 @@ export const createCachingMethods = async ({ collection, cache }) => {
 
     try {
       let items = await collection.find({ $or: queries.map(({query}) => query) }, projection)
-      .select(select)
-      .sort(sortBy)
-      .lean()
+      // .select(select)
+      // .sort(sortBy)
+      // .lean()
       .toArray();
 
+      items = idsToStrings(items);
+
+      return queries.map(({query}) => items.filter(sift(query)));
     } catch(e) {
       throw e;
     }
 
-    items = idsToStrings(items);
-
-    return queries.map({query}) => items.filter(sift(query)));
   }
 
-  const queryLoader = new DataLoader(queries => dataQuery({ queries }));
+  const queryLoader = new DataLoader(queries => {
+    return dataQuery({ queries })
+
+  });
 
   const cachePrefix = `mongo-${getCollection(collection).collectionName}-`
 
@@ -55,13 +59,14 @@ export const createCachingMethods = async ({ collection, cache }) => {
     findOneById: async (id, { ttl } = {}) => {
       const key = cachePrefix + id
 
+      let doc;
       try {
         const cacheDoc = await cache.get(key)
         if (cacheDoc) {
           return cacheDoc
         }
 
-        const doc = await loader.load(id)
+        doc = await loader.load(id)
       } catch(e) {
         throw e;
       }
@@ -71,7 +76,7 @@ export const createCachingMethods = async ({ collection, cache }) => {
         cache.set(key, doc, { ttl })
       }
 
-      return doc
+      return doc;
     },
     findManyByIds: (ids, { ttl } = {}) => {
       return Promise.all(ids.map(id => methods.findOneById(id, { ttl })))
@@ -80,7 +85,7 @@ export const createCachingMethods = async ({ collection, cache }) => {
     deleteFromCacheById: id => cache.delete(cachePrefix + id),
     // deleteFromCacheByQuery: query => cache.delete(cachePrefix + id),
 
-    findByQuery = async ({query, ttl }) => {
+    findByQuery: async (query) => {
       try {
         const docs = await queryLoader.load(query);
         docs.forEach(doc => loader.prime(doc._id.toString(), doc));
@@ -88,9 +93,9 @@ export const createCachingMethods = async ({ collection, cache }) => {
       } catch(e) {
         throw e;
       }
-    }
+    },
 
-    findOneByQuery = async (query) => {
+    findOneByQuery: async (query) => {
       try {
         const docs = await methods.findByQuery(query);
         return first(docs);

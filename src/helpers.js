@@ -7,4 +7,4 @@ export const isCollectionOrModel = x =>
 
 export const getCollection = x => (isModel(x) ? x.collection : x)
 
-export const idsToStrings = x => x.map(i => ({...i, id: i._id.toString()}));
+export const idsToStrings = x => x.map(i => ({...i, id: i._id.toString() ? i._id.toString() : i._id}));
