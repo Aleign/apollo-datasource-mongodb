@@ -26,7 +26,7 @@ export const createCachingMethods = ({ model, collection, cache }) => {
         .select(select)
         .lean()
 
-      return idsToStrings(orderDocs(ids)(items));
+      return idsToStrings({items: orderDocs(ids)(items)});
 
     } catch(e) {
       throw e;
