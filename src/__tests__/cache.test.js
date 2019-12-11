@@ -17,16 +17,33 @@ const docs = [
   {
     _id: 'id3',
     id: 'id3'
+  },
+  {
+     _id: '5be116777e3ebb224418a765',
+    updatedAt: '2019-08-09T03:29:56.354Z',
+    createdAt: '2018-11-06T04:20:07.300Z',
+    name: 'Sprint 5 - 30 july to 14 aug (or there abouts)',
+    description: 'ggggddddxxxxx   sssxxxsssscccss',
+    createdBy: '5be116328e5ee8223fd321d4',
+    goals: [ 'ssss' ],
+    __v: 23,
+    maxFree: 1,
+    participants: [
+      {
+        user: '5be116328e5ee8223fd321d4'
+      }
+    ],
+    id: '5be116777e3ebb224418a765'
   }
 ];
 
-const getDoc = id => first(docs.filter(d => d.id === id));
+const getDoc = _id => first(docs.filter(d => d._id === _id));
 
 const collectionName = 'test'
 const cacheKey = id => `mongo-${collectionName}-${id}`
 
 describe('createCachingMethods', () => {
-  let collection
+  let collection;
   let api
   let cache
 
@@ -43,7 +60,7 @@ describe('createCachingMethods', () => {
 
     cache = new InMemoryLRUCache()
 
-    api = createCachingMethods({ collection, cache })
+    api = createCachingMethods({ collection, model: collection, cache })
   })
 
   it('adds the right methods', () => {
@@ -84,6 +101,21 @@ describe('createCachingMethods', () => {
     expect(collection.find.mock.calls.length).toBe(1)
   })
 
+  it('finds one with a complex query', async () => {
+    const query = {
+      _id: { '$in': [ '5be116777e3ebb224418a765' ] },
+      'participants.user': { '$in': [ '5be116328e5ee8223fd321d4' ] },
+      $or: [
+        { deletedAt: { $eq: null }},
+        { deletedAt: { $exists: false }}
+      ]
+    }
+
+    const doc = await api.findOneByQuery({query});
+    expect(doc).toMatchObject(getDoc('5be116777e3ebb224418a765'));
+
+    expect(collection.find.mock.calls.length).toBe(1)
+  })
   // TODO why doesn't this pass?
   // it.only(`doesn't cache without ttl`, async () => {
   //   await api.findOneById('id1')

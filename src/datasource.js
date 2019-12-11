@@ -28,6 +28,7 @@ class MongoDataSource extends DataSource {
     this.context = context
 
     const methods = createCachingMethods({
+      model: this.model,
       collection: this.collection,
       cache: cache || new InMemoryLRUCache()
     })

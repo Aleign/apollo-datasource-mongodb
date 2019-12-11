@@ -1,5 +1,5 @@
 import DataLoader from 'dataloader'
-import { first } from 'lodash';
+import { first, last, uniqBy, uniq, mergeWith, isArray, union, flatten } from 'lodash';
 import sift from 'sift'
 import { getCollection, idsToStrings } from './helpers'
 // https://github.com/graphql/dataloader#batch-function
@@ -13,33 +13,58 @@ const orderDocs = ids => docs => {
   return ids.map(id => idMap[id])
 }
 
-export const createCachingMethods = ({ collection, cache }) => {
-  const loader = new DataLoader(async ids => {
+export const createCachingMethods = ({ model, collection, cache }) => {
+  const loader = new DataLoader(async queries => {
+
+    const select = uniq(flatten(queries.map(q => q.select ? q.select.split(' ') : [] ))).join(' ');
+
+    const ids = queries.map(q => q.id);
 
     try {
-      const items = await collection
-        .find({ _id: { $in: ids } })
-        .toArray()
+      let items = await model
+        .find({ _id: { $in: uniq(ids) } })
+        .select(select)
+        .lean()
 
       return idsToStrings(orderDocs(ids)(items));
 
     } catch(e) {
       throw e;
     }
-  })
-
+  }, {cache: false})
 
   const dataQuery = async ({ queries }) => {
-    const { projection, select, lean, sort } = first(queries)
 
+    const select = uniq(flatten(queries.map(q => q.select ? q.select.split(' ') : [] ))).join(' ');
+
+    // const uniqueQueries = mergeWith({}, uniqBy({ query }, JSON.stringify);
+
+    const query = mergeWith({}, ...queries.map(q => q.query), (objValue, srcValue) => {
+      if (isArray(objValue)) {
+        return uniqBy(union(srcValue, objValue), id => id.toString() ? id.toString() : id);
+      }
+    });
+
+    const projection = mergeWith({}, ...queries.map(q => q.projection), (objValue, srcValue) => {
+      if (isArray(objValue)) {
+        return [first(srcValue), uniqBy(union(last(srcValue), last(objValue)), id => id.toString() ? id.toString() : id)];
+      }
+    })
+
+    let items;
     try {
-      let items = await collection.find({ $or: queries.map(({query}) => query) }, projection)
-      // .select(select)
-      // .sort(sortBy)
-      // .lean()
-      .toArray();
+      if (projection.$project) {
+        items = await model.aggregate([
+          { $match: query },
+          { ...projection }
+        ]);
+      } else {
+        items = await model.find(query, projection)
+        .select(select)
+        .lean()
+      }
 
-      items = idsToStrings(items);
+      items = idsToStrings({items});
 
       return queries.map(({query}) => items.filter(sift(query)));
     } catch(e) {
@@ -48,16 +73,16 @@ export const createCachingMethods = ({ collection, cache }) => {
 
   }
 
-  const queryLoader = new DataLoader(queries => {
+  const queryLoader = new DataLoader(async queries => {
     return dataQuery({ queries })
 
-  });
+  }, {cache: false, cacheKeyFn: params => params.key});
 
   const cachePrefix = `mongo-${getCollection(collection).collectionName}-`
 
   const methods = {
-    findOneById: async (id, { ttl } = {}) => {
-      const key = cachePrefix + id
+    findOneById: async (params) => {
+      const key = cachePrefix + params.id
 
       let doc;
       try {
@@ -66,20 +91,20 @@ export const createCachingMethods = ({ collection, cache }) => {
           return cacheDoc
         }
 
-        doc = await loader.load(id)
+        doc = await loader.load(params)
       } catch(e) {
         throw e;
       }
 
-      if (Number.isInteger(ttl)) {
+      if (Number.isInteger(params.ttl)) {
         // https://github.com/apollographql/apollo-server/tree/master/packages/apollo-server-caching#apollo-server-caching
-        cache.set(key, doc, { ttl })
+        cache.set(key, doc, { ttl: params.ttl })
       }
 
       return doc;
     },
-    findManyByIds: (ids, { ttl } = {}) => {
-      return Promise.all(ids.map(id => methods.findOneById(id, { ttl })))
+    findManyByIds: async (params) => {
+      return Promise.all(params.ids.map(id => methods.findOneById({id, ...params})))
     },
 
     deleteFromCacheById: id => cache.delete(cachePrefix + id),
@@ -88,7 +113,7 @@ export const createCachingMethods = ({ collection, cache }) => {
     findByQuery: async (query) => {
       try {
         const docs = await queryLoader.load(query);
-        docs.forEach(doc => loader.prime(doc._id.toString(), doc));
+        docs.forEach(doc => loader.prime(query.key, doc));
         return docs
       } catch(e) {
         throw e;
@@ -108,18 +133,3 @@ export const createCachingMethods = ({ collection, cache }) => {
 
   return methods
 }
-
-
-// function usersByQueryBatchLoadFn(queries) {
-//   // The '$or' operator lets you combine multiple queries so that any record matching any of the queries gets returned
-//   const users = await MongooseUserModel.find({ '$or': queries }).exec();
-//
-//   // You can prime other loaders as well
-//   // Priming inserts the key into the cache of another loader
-//   for (const user of users) {
-//     userByIdLoader.prime(user.id.toString(), user);
-//   }
-//
-//   // Sift.js applies the MongoDB query to the data to determine if it matches the query. We use this to assign the right users to the right query that requested it.
-//   return queries.map(query => users.filter(sift(query)));
-// };
